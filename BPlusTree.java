@@ -1,206 +1,165 @@
+package tree;
+
+import list.ArrayList;
+
+/**
+ * B+ Tree genérico para Sistema de Gestión y Optimización de Inventarios en Almacenes.
+ * Permite inserción, búsqueda, eliminación básica y consultas por rango.
+ * Las hojas están enlazadas para búsquedas por rango.
+ * @param <T> tipo de clave, debe ser Comparable
+ */
 public class BPlusTree<T extends Comparable<T>> {
-    private static final int T = 3; // Orden del B+ Tree
+    private static final int DEFAULT_ORDER = 4;
+    private final int order;
+    private Node root;
 
-    private class Node {
-        int n;
-        boolean leaf = true;
-        ArrayList<T> key = new ArrayList<>();
-        ArrayList<Node> child = new ArrayList<>();
-
-        int find(T k) {
-            for (int i = 0; i < n; i++) {
-                if (key.get(i).compareTo(k) == 0) {
-                    return i;
-                }
-            }
-            return -1;
-        }
+    private abstract class Node {
+        ArrayList<T> keys = new ArrayList<>();
+        int keyCount() { return keys.size(); }
+        abstract boolean isLeaf();
     }
 
-    private Node root = new Node();
+    private class InternalNode extends Node {
+        ArrayList<Node> children = new ArrayList<>();
+        @Override boolean isLeaf() { return false; }
+    }
 
-    public void update(T oldValue, T newValue) {
-        delete(oldValue);
-        insert(newValue);
+    private class LeafNode extends Node {
+        ArrayList<T> values = new ArrayList<>();
+        LeafNode next;
+        @Override boolean isLeaf() { return true; }
+    }
+
+    public BPlusTree() { this(DEFAULT_ORDER); }
+    public BPlusTree(int order) {
+        if (order < 3) throw new IllegalArgumentException("Order must be >= 3");
+        this.order = order;
+        root = new LeafNode();
     }
 
     public void insert(T key) {
-        Node r = root;
-        if (r.n == 2 * T - 1) {
-            Node s = new Node();
-            root = s;
-            s.leaf = false;
-            s.n = 0;
-            s.child.add(r);
-            split(s, 0, r);
-            insertNonFull(s, key);
-        } else {
-            insertNonFull(r, key);
-        }
+        LeafNode leaf = findLeaf(root, key);
+        insertIntoLeaf(leaf, key);
+        if (leaf.keyCount() > order - 1) splitLeaf(leaf);
     }
 
-    private void split(Node x, int pos, Node y) {
-        Node z = new Node();
-        z.leaf = y.leaf;
-        z.n = T - 1;
-        for (int j = 0; j < T - 1; j++) {
-            z.key.add(y.key.get(j + T));
-        }
-        if (!y.leaf) {
-            for (int j = 0; j < T; j++) {
-                z.child.add(y.child.get(j + T));
-            }
-        }
-        y.n = T - 1;
-        x.child.add(pos + 1, z);
-        x.key.add(pos, y.key.get(T - 1));
-        x.n++;
+    private LeafNode findLeaf(Node node, T key) {
+        if (node.isLeaf()) return (LeafNode) node;
+        InternalNode in = (InternalNode) node;
+        int idx = 0;
+        while (idx < in.keyCount() && key.compareTo(in.keys.get(idx)) >= 0) idx++;
+        return findLeaf(in.children.get(idx), key);
     }
 
-    private void insertNonFull(Node x, T k) {
-        int i = x.n - 1;
-        if (x.leaf) {
-            x.key.add(null);
-            while (i >= 0 && k.compareTo(x.key.get(i)) < 0) {
-                x.key.set(i + 1, x.key.get(i));
-                i--;
-            }
-            x.key.set(i + 1, k);
-            x.n++;
-        } else {
-            while (i >= 0 && k.compareTo(x.key.get(i)) < 0) {
-                i--;
-            }
-            i++;
-            if (x.child.get(i).n == 2 * T - 1) {
-                split(x, i, x.child.get(i));
-                if (k.compareTo(x.key.get(i)) > 0) {
-                    i++;
-                }
-            }
-            insertNonFull(x.child.get(i), k);
+    private void insertIntoLeaf(LeafNode leaf, T key) {
+        int pos = 0;
+        while (pos < leaf.keyCount() && key.compareTo(leaf.keys.get(pos)) > 0) pos++;
+        leaf.keys.add(pos, key);
+        leaf.values.add(pos, key);
+    }
+
+    private void splitLeaf(LeafNode leaf) {
+        int mid = order / 2;
+        LeafNode newLeaf = new LeafNode();
+        // mover claves y valores
+        for (int i = mid; i < leaf.keyCount(); i++) {
+            newLeaf.keys.add(leaf.keys.get(i));
+            newLeaf.values.add(leaf.values.get(i));
         }
+        // borrar movidos de hoja original
+        while (leaf.keyCount() > mid) {
+            leaf.keys.remove(mid);
+            leaf.values.remove(mid);
+        }
+        // enlazar hojas
+        newLeaf.next = leaf.next;
+        leaf.next = newLeaf;
+        // insertar en padre
+        insertIntoParent(leaf, newLeaf.keys.get(0), newLeaf);
     }
 
-    public void delete(T key) {
-        delete(root, key);
+    private void insertIntoParent(Node left, T key, Node right) {
+        if (left == root) {
+            InternalNode newRoot = new InternalNode();
+            newRoot.keys.add(key);
+            newRoot.children.add(left);
+            newRoot.children.add(right);
+            root = newRoot;
+            return;
+        }
+        InternalNode parent = findParent(root, left);
+        int idx = 0;
+        while (idx < parent.keyCount() && key.compareTo(parent.keys.get(idx)) >= 0) idx++;
+        parent.keys.add(idx, key);
+        parent.children.add(idx+1, right);
+        if (parent.children.size() > order) splitInternal(parent);
     }
 
-    @SuppressWarnings("unchecked")
-    private void delete(Node x, T key) {
-        int pos = x.find(key);
-        if (pos != -1) {
-            if (x.leaf) {
-                x.key.remove(pos);
-                x.n--;
-            } else {
-                Node pred = x.child.get(pos);
-                if (pred.n >= T) {
-                    T predKey = getPred(x, pos);
-                    delete(pred, predKey);
-                    x.key.set(pos, predKey);
-                } else {
-                    Node next = x.child.get(pos + 1);
-                    if (next.n >= T) {
-                        T nextKey = getSucc(x, pos);
-                        delete(next, nextKey);
-                        x.key.set(pos, nextKey);
-                    } else {
-                        merge(x, pos);
-                        delete(pred, key);
-                    }
-                }
+    private InternalNode findParent(Node current, Node child) {
+        if (!current.isLeaf()) {
+            InternalNode in = (InternalNode) current;
+            for (int i = 0; i < in.children.size(); i++) {
+                if (in.children.get(i) == child) return in;
             }
-        } else {
-            for (pos = 0; pos < x.n; pos++) {
-                if (x.key.get(pos).compareTo(key) > 0) {
-                    break;
-                }
-            }
-            Node tmp = x.child.get(pos);
-            if (tmp.n == T - 1) {
-                Node nb = null;
-                int devider = -1;
-
-                if (pos != x.n && x.child.get(pos + 1).n >= T) {
-                    devider = (int) x.key.get(pos);
-                    nb = x.child.get(pos + 1);
-                    x.key.set(pos, nb.key.get(0));
-                    tmp.key.add((T) Integer.valueOf(devider));
-                    tmp.child.add(tmp.n + 1, nb.child.get(0));
-                    nb.key.remove(0);
-                    nb.child.remove(0);
-                    nb.n--;
-                    delete(tmp, key);
-                } else if (pos != 0 && x.child.get(pos - 1).n >= T) {
-                    devider = (int) x.key.get(pos - 1);
-                    nb = x.child.get(pos - 1);
-                    x.key.set(pos - 1, nb.key.get(nb.n - 1));
-                    Node child = nb.child.get(nb.n);
-                    nb.n--;
-
-                    tmp.key.add(0, (T) Integer.valueOf(devider));
-                    tmp.child.add(0, child);
-                    tmp.n++;
-                    delete(tmp, key);
-                } else {
-                    if (pos != x.n) {
-                        merge(x, pos);
-                    } else {
-                        merge(x, pos - 1);
-                    }
-                    delete(x.child.get(pos), key);
-                }
-            } else {
-                delete(tmp, key);
+            for (int i = 0; i < in.children.size(); i++) {
+                InternalNode parent = findParent(in.children.get(i), child);
+                if (parent != null) return parent;
             }
         }
+        return null;
     }
 
-    private void merge(Node x, int pos) {
-        Node left = x.child.get(pos);
-        Node right = x.child.get(pos + 1);
-        left.key.add((T) x.key.get(pos));
-        left.key.addAll(right.key);
-        left.child.addAll(right.child);
-        x.key.remove(pos);
-        x.child.remove(pos + 1);
-        left.n += right.n + 1;
-        x.n--;
-    }
-
-    private T getPred(Node x, int pos) {
-        Node cur = x.child.get(pos);
-        while (!cur.leaf) {
-            cur = cur.child.get(cur.n);
+    private void splitInternal(InternalNode node) {
+        int mid = order / 2;
+        T upKey = node.keys.get(mid);
+        InternalNode rightNode = new InternalNode();
+        // mover claves
+        for (int i = mid+1; i < node.keyCount(); i++) {
+            rightNode.keys.add(node.keys.get(i));
         }
-        return cur.key.get(cur.n - 1);
-    }
-
-    private T getSucc(Node x, int pos) {
-        Node cur = x.child.get(pos + 1);
-        while (!cur.leaf) {
-            cur = cur.child.get(0);
+        // mover hijos
+        for (int i = mid+1; i < node.children.size(); i++) {
+            rightNode.children.add(node.children.get(i));
         }
-        return cur.key.get(0);
+        // recortar nodo original
+        while (node.keyCount() > mid) node.keys.remove(mid);
+        while (node.children.size() > mid+1) node.children.remove(node.children.size()-1);
+        insertIntoParent(node, upKey, rightNode);
     }
 
     public boolean contains(T key) {
-        return contains(root, key);
+        LeafNode leaf = findLeaf(root, key);
+        for (int i = 0; i < leaf.keyCount(); i++) {
+            if (leaf.keys.get(i).equals(key)) return true;
+        }
+        return false;
     }
 
-    private boolean contains(Node x, T key) {
-        int pos = 0;
-        while (pos < x.n && key.compareTo(x.key.get(pos)) > 0) {
-            pos++;
+    public ArrayList<T> rangeSearch(T from, T to) {
+        ArrayList<T> result = new ArrayList<>();
+        LeafNode leaf = findLeaf(root, from);
+        while (leaf != null) {
+            for (int i = 0; i < leaf.keyCount(); i++) {
+                T k = leaf.keys.get(i);
+                if (k.compareTo(from) >= 0 && k.compareTo(to) <= 0) {
+                    result.add(k);
+                } else if (k.compareTo(to) > 0) {
+                    return result;
+                }
+            }
+            leaf = leaf.next;
         }
-        if (pos < x.n && key.compareTo(x.key.get(pos)) == 0) {
-            return true;
-        }
-        if (x.leaf) {
-            return false;
-        } else {
-            return contains(x.child.get(pos), key);
+        return result;
+    }
+
+    public void delete(T key) {
+        LeafNode leaf = findLeaf(root, key);
+        for (int i = 0; i < leaf.keyCount(); i++) {
+            if (leaf.keys.get(i).equals(key)) {
+                leaf.keys.remove(i);
+                leaf.values.remove(i);
+                return;
+            }
         }
     }
 
@@ -208,12 +167,14 @@ public class BPlusTree<T extends Comparable<T>> {
         display(root, "");
     }
 
-    private void display(Node x, String prefix) {
-        if (x != null) {
-            System.out.println(prefix + "└── " + x.key);
-            for (int i = 0; i < x.child.size(); i++) {
-                String childPrefix = prefix + (i == x.child.size() - 1 ? "    " : "│   ");
-                display(x.child.get(i), childPrefix);
+    private void display(Node node, String indent) {
+        if (node.isLeaf()) {
+            System.out.println(indent + "Leaf: " + node.keys);
+        } else {
+            InternalNode in = (InternalNode) node;
+            System.out.println(indent + "Internal: " + in.keys);
+            for (int i = 0; i < in.children.size(); i++) {
+                display(in.children.get(i), indent + "    ");
             }
         }
     }
